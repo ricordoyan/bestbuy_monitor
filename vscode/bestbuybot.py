@@ -54,16 +54,22 @@ class BestBuyMonitor:
         options.add_argument("--js-flags=--expose-gc")
         options.add_argument("--disable-renderer-backgrounding")
         options.add_argument("--memory-pressure-off")
-        options.add_argument("--single-process")  # More stable in some environments
         
-        # Simplified error suppression (reduced from original)
+        # WebGL settings - properly handle the WebGL warnings
+        options.add_argument("--disable-webgl")  # Disable WebGL completely
+        options.add_argument("--enable-unsafe-swiftshader")  # Required if WebGL is used at all
+        
+        # Logging and notification settings
         options.add_argument("--disable-notifications")
         options.add_argument("--log-level=3")  # Only show fatal errors
         options.add_experimental_option('excludeSwitches', ['enable-logging'])
         
-        # Disable UI elements
+        # Disable UI elements and automation flags
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
+        
+        # User agent to make the request look more like a regular browser
+        options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
         
         return options
 
@@ -83,7 +89,7 @@ class BestBuyMonitor:
             sys.stderr = original_stderr
             
             # Set page load timeout (increased for reliability)
-            driver.set_page_load_timeout(60)
+            driver.set_page_load_timeout(90)  # Increased to 90 seconds for better reliability
             
             return driver
         except Exception as e:
@@ -137,7 +143,7 @@ class BestBuyMonitor:
     def get_button_status(self):
         """Check the status of the product button."""
         try:
-            WebDriverWait(self.driver, 15).until(  # Increased wait time
+            WebDriverWait(self.driver, 20).until(  # Increased wait time
                 EC.presence_of_element_located((By.CSS_SELECTOR, ".add-to-cart-button"))
             )
             
@@ -234,11 +240,19 @@ class BestBuyMonitor:
         for attempt in range(1, max_retries + 1):
             try:
                 print(f"Loading page, attempt {attempt}/{max_retries}")
+                
+                # Clear browser cache before loading to avoid stale content
+                if attempt > 1:
+                    self.driver.execute_script("window.localStorage.clear();")
+                    self.driver.execute_script("window.sessionStorage.clear();")
+                    self.driver.delete_all_cookies()
+                
                 self.driver.get(self.url)
                 return True
             except TimeoutException:
                 print(f"Page load timeout (attempt {attempt}/{max_retries})")
                 if attempt < max_retries:
+                    # Exponential backoff with jitter
                     backoff_time = 5 + random.randint(1, 5) * attempt
                     print(f"Retrying in {backoff_time} seconds...")
                     time_module.sleep(backoff_time)
@@ -260,7 +274,8 @@ class BestBuyMonitor:
         except Exception as e:
             print(f"Error closing browser: {e}")
         
-        time_module.sleep(5)  # Wait a bit before restarting
+        # Wait longer before restarting to ensure resources are freed
+        time_module.sleep(10)
         self.driver = self._setup_driver()
         self.check_count = 0
         print("Browser restarted successfully")
@@ -310,6 +325,9 @@ class BestBuyMonitor:
                     
             except Exception as e:
                 print(f"Error during monitoring: {e}")
+                print("Detailed error:", str(e))
+                # Force browser restart after any unhandled exception
+                self.restart_browser()
                 time_module.sleep(self.intensive_check_interval)
             
     def cleanup(self):
@@ -320,19 +338,26 @@ class BestBuyMonitor:
             print(f"Error during cleanup: {e}")
 
 if __name__ == "__main__":
-    # Redirect standard error to suppress WebDriver messages
+    print("Starting Best Buy Monitor...")
+    
+    # Set up error handling for the entire process
     if not os.getenv("DEBUG", "False").lower() == "true":
         sys.stderr = open(os.devnull, 'w')
     
-    monitor = BestBuyMonitor()
     try:
-        monitor.monitor_stock()
-    except KeyboardInterrupt:
-        print("\nMonitoring stopped by user")
+        monitor = BestBuyMonitor()
+        try:
+            monitor.monitor_stock()
+        except KeyboardInterrupt:
+            print("\nMonitoring stopped by user")
+        except Exception as e:
+            print(f"Fatal error: {e}")
+        finally:
+            print("Cleaning up resources...")
+            monitor.cleanup()
     except Exception as e:
-        print(f"Fatal error: {e}")
+        print(f"Error initializing monitor: {e}")
     finally:
-        print("Cleaning up resources...")
-        monitor.cleanup()
         # Restore stderr
         sys.stderr = sys.__stderr__
+        print("Monitor shutdown complete")
